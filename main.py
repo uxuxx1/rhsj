@@ -244,7 +244,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         context.user_data["waiting_for"] = None
 
-async def main():
+def main():
     app = Application.builder().token(TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
@@ -252,7 +252,7 @@ async def main():
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
-    await app.run_polling()
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
