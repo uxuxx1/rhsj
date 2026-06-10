@@ -54,8 +54,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard = [
         [InlineKeyboardButton("запустить код", callback_data="run_code")],
-        [InlineKeyboardButton("установить pip", callback_data="install_pip")],
-        [InlineKeyboardButton("ии помощник", callback_data="ai_help")],
         [InlineKeyboardButton("профиль", callback_data="profile")],
         [InlineKeyboardButton("лимиты", callback_data="limits")],
         [InlineKeyboardButton("остановить код", callback_data="stop_code")],
@@ -72,20 +70,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     if query.data == "run_code":
-        await query.edit_message_text("отправь python файл, максимум 0.50кб")
-        context.user_data["waiting_for"] = "code_file"
-    
-    if query.data == "run_code":
-        await query.edit_message_text("введи название пакета, например requests или numpy")
-        context.user_data["waiting_for"] = "pip_package"
-    
-    elif query.data == "ai_help":
-        user_data = get_user_data(user_id)
-        if user_data["ai_requests_today"] >= 10:
-            await query.edit_message_text("исчерпал лимит вопросов на сегодня, осталось 0")
-        else:
-            await query.edit_message_text("опиши проблему с кодом")
-            context.user_data["waiting_for"] = "ai_question"
+        await query.edit_message_text("отправь .py файл максимум 0.50кб")
     
     elif query.data == "profile":
         user_data = get_user_data(user_id)
@@ -116,26 +101,47 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
+    document = update.message.document
     
-    if context.user_data.get("waiting_for") == "code_file":
-        document = update.message.document
-        
-        if not document.file_name.endswith('.py'):
-            await update.message.reply_text("отправь python файл с расширением .py")
-            return
-        
-        file = await context.bot.get_file(document.file_id)
-        file_bytes = await file.download_as_bytearray()
-        
-        if not check_file_size(file_bytes):
-            await update.message.reply_text("файл слишком большой, максимум 0.50кб")
-            return
-        
+    if not document.file_name.endswith('.py'):
+        await update.message.reply_text("отправь .py файл")
+        return
+    
+    file = await context.bot.get_file(document.file_id)
+    file_bytes = await file.download_as_bytearray()
+    
+    if not check_file_size(file_bytes):
+        await update.message.reply_text("максимум 0.50кб")
+        return
+    
+    user_data = get_user_data(user_id)
+    user_data["code"] = file_bytes.decode('utf-8')
+    context.user_data["waiting_for"] = "packages"
+    
+    await update.message.reply_text("нужны пакеты? напиши названия через пробел или точка если нет")
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    user_text = update.message.text.strip()
+    waiting_for = context.user_data.get("waiting_for")
+    
+    if waiting_for == "packages":
         user_data = get_user_data(user_id)
-        user_data["code"] = file_bytes.decode('utf-8')
-        user_data["uploaded_at"] = datetime.now()
-        
         context.user_data["waiting_for"] = None
+        
+        if user_text != ".":
+            packages = user_text.split()
+            await update.message.reply_text(f"устанавливаю {len(packages)} пакетов...")
+            
+            for package in packages:
+                try:
+                    subprocess.run(
+                        ["pip", "install", package],
+                        capture_output=True,
+                        timeout=15
+                    )
+                except:
+                    pass
         
         await update.message.reply_text("запускаю код...")
         
@@ -152,97 +158,18 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
             output = result.stdout if result.stdout else result.stderr
-            
             if output:
                 await update.message.reply_text(f"результат\n{output[:500]}")
             else:
-                await update.message.reply_text("код выполнился без вывода")
+                await update.message.reply_text("выполнено")
             
             os.remove(temp_file)
-            
         except subprocess.TimeoutExpired:
-            await update.message.reply_text("код выполнялся слишком долго")
+            await update.message.reply_text("таймаут")
         except Exception as e:
-            await update.message.reply_text(f"ошибка\n{str(e)[:200]}")
-
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.message.from_user.id
-    user_text = update.message.text
-    waiting_for = context.user_data.get("waiting_for")
-    
-    if waiting_for == "pip_package":
-        package = user_text.strip()
-        await update.message.reply_text(f"устанавливаю {package}...")
+            await update.message.reply_text(f"ошибка {str(e)[:100]}")
         
-        try:
-            result = subprocess.run(
-                ["pip", "install", package],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-            if result.returncode == 0:
-                await update.message.reply_text(f"{package} установлен успешно")
-            else:
-                error_msg = result.stderr if result.stderr else result.stdout
-                await update.message.reply_text(f"ошибка при установке {package}\n{error_msg[:300]}")
-        except subprocess.TimeoutExpired:
-            await update.message.reply_text("установка заняла слишком много времени")
-        except Exception as e:
-            await update.message.reply_text(f"ошибка при установке\n{str(e)[:200]}")
-        
-        context.user_data["waiting_for"] = None
-    
-    elif waiting_for == "ai_question":
-        user_data = get_user_data(user_id)
-        
-        if len(user_text) > 150:
-            await update.message.reply_text("максимум 150 букв в вопросе")
-            return
-        
-        if user_data["ai_requests_today"] >= 10:
-            await update.message.reply_text("исчерпал лимит на сегодня")
-            context.user_data["waiting_for"] = None
-            return
-        
-        code = user_data["code"] if user_data["code"] else "кода нет"
-        
-        await update.message.reply_text("думаю...")
-        
-        async with httpx.AsyncClient() as client:
-            try:
-                response = await client.post(
-                    "https://openrouter.ai/api/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {OPENROUTER_KEY}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": "google/gemini-2.5-flash-001",
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": f"помоги с кодом python\nкод:\n{code}\n\nпроблема:\n{user_text}"
-                            }
-                        ],
-                        "max_tokens": 500
-                    },
-                    timeout=30
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    ai_response = data['choices'][0]['message']['content']
-                    user_data["ai_requests_today"] += 1
-                    
-                    ai_left = 10 - user_data["ai_requests_today"]
-                    await update.message.reply_text(f"решение\n{ai_response}\n\nвопросов осталось {ai_left}")
-                else:
-                    await update.message.reply_text("ошибка при обращении к ии")
-            except Exception as e:
-                await update.message.reply_text(f"ошибка {str(e)}")
-        
-        context.user_data["waiting_for"] = None
+        return
 
 def main():
     app = Application.builder().token(TOKEN).build()
