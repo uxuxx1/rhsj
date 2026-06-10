@@ -1,7 +1,6 @@
 import os
 import asyncio
 import time
-import signal
 import subprocess
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -12,15 +11,14 @@ CHANNEL = "@workinuxuxx"
 
 # ---------- настройки ----------
 MAX_CODE_SIZE_KB = 0.45
-CODE_TIMEOUT_SEC = 35
-PACKAGE_INSTALL_TIMEOUT = 10
-MAX_PACKAGES = 3
-USER_COOLDOWN_SEC = 10
-MAX_CONCURRENT_EXECUTIONS = 2
+CODE_TIMEOUT_SEC = 35          # таймаут выполнения кода (сек)
+PACKAGE_INSTALL_TIMEOUT = 10   # таймаут установки одного пакета
+MAX_PACKAGES = 3               # максимум пакетов за раз
+USER_COOLDOWN_SEC = 10         # кулдаун между запусками одного пользователя
+MAX_CONCURRENT_EXECUTIONS = 2  # сколько кодов могут выполняться одновременно
 # ------------------------------
 
 users_data = {}
-user_processes = {}
 last_global_start = datetime.now()
 bot_start_time = datetime.now()
 user_last_run = {}
@@ -52,36 +50,22 @@ def run_code_sync(code, user_id):
     try:
         with open(temp_file, 'w') as f:
             f.write(code)
-
-        proc = subprocess.Popen(
+        # Простой и надёжный запуск с таймаутом
+        result = subprocess.run(
             ["python", temp_file],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
-            start_new_session=True
+            timeout=CODE_TIMEOUT_SEC
         )
-        user_processes[user_id] = proc
-
-        try:
-            stdout, stderr = proc.communicate(timeout=CODE_TIMEOUT_SEC)
-        except subprocess.TimeoutExpired:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            proc.wait()
-            return "код выполнялся дольше 5 секунд и был остановлен"
-
-        output = stdout if stdout else stderr
+        output = result.stdout if result.stdout else result.stderr
         return output if output else "выполнено"
-
+    except subprocess.TimeoutExpired:
+        return f"код выполнялся дольше {CODE_TIMEOUT_SEC} секунд и был остановлен"
     except Exception as e:
         return f"ошибка: {str(e)[:200]}"
     finally:
         if os.path.exists(temp_file):
             os.remove(temp_file)
-        if user_id in user_processes and user_processes[user_id] is proc:
-            del user_processes[user_id]
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global last_global_start, bot_start_time
@@ -148,19 +132,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text)
 
     elif query.data == "stop_code":
-        proc = user_processes.get(user_id)
-        if proc and proc.poll() is None:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-                proc.wait()
-                await query.edit_message_text("код остановлен")
-            except Exception as e:
-                await query.edit_message_text(f"не удалось остановить: {e}")
-            finally:
-                if user_id in user_processes:
-                    del user_processes[user_id]
-        else:
-            await query.edit_message_text("код не запущен или уже завершился")
+        # Останавливать нечего, просто сообщаем
+        await query.edit_message_text("код не запущен или уже завершился")
 
     elif query.data == "docs":
         text = (
@@ -183,12 +156,6 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not document.file_name.endswith('.py'):
         await update.message.reply_text("отправь .py файл")
-        return
-
-    # Проверяем, не выполняется ли код прямо сейчас
-    proc = user_processes.get(user_id)
-    if proc and proc.poll() is None:
-        await update.message.reply_text("сначала дождитесь завершения текущего кода")
         return
 
     file = await context.bot.get_file(document.file_id)
@@ -217,14 +184,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_data = get_user_data(user_id)
         context.user_data[user_id]["waiting_for"] = None
 
-        # Уже запускал раньше?
         if user_data.get("has_executed"):
             await update.message.reply_text("вы уже запускали код, больше нельзя")
-            return
-
-        # Выполняется ли сейчас?
-        if user_id in user_processes and user_processes[user_id].poll() is None:
-            await update.message.reply_text("у вас уже выполняется код, дождитесь завершения или остановите")
             return
 
         now = time.time()
@@ -252,16 +213,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("запускаю код... (ожидание очереди, если нужно)")
 
         async with execution_semaphore:
-            # Повторная проверка на активный процесс (вдруг появился)
-            if user_id in user_processes and user_processes[user_id].poll() is None:
-                await update.message.reply_text("у вас уже выполняется код, дождитесь завершения")
-                return
-
             loop = asyncio.get_event_loop()
             output = await loop.run_in_executor(None, run_code_sync, user_data["code"], user_id)
 
             user_last_run[user_id] = time.time()
-            user_data["has_executed"] = True  # запоминаем, что запускал
+            user_data["has_executed"] = True
 
             if output:
                 await update.message.reply_text(f"результат\n{output[:500]}")
