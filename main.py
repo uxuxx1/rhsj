@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 import time
 import subprocess
@@ -6,17 +7,16 @@ from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
+# ---------- НАСТРОЙКИ ----------
 TOKEN = "8853718455:AAEEcfMdYKRCDRv3wykOVN_J7QmTmeIxiy4"
 CHANNEL = "@workinuxuxx"
-
-# ---------- настройки ----------
 MAX_CODE_SIZE_KB = 0.45
-CODE_TIMEOUT_SEC = 35          # таймаут выполнения кода (сек)
-PACKAGE_INSTALL_TIMEOUT = 10   # таймаут установки одного пакета
-MAX_PACKAGES = 3               # максимум пакетов за раз
-USER_COOLDOWN_SEC = 10         # кулдаун между запусками одного пользователя
-MAX_CONCURRENT_EXECUTIONS = 2  # сколько кодов могут выполняться одновременно
-# ------------------------------
+CODE_TIMEOUT_SEC = 35
+PACKAGE_INSTALL_TIMEOUT = 10
+MAX_PACKAGES = 3
+USER_COOLDOWN_SEC = 10
+MAX_CONCURRENT_EXECUTIONS = 2
+# -----------------------------
 
 users_data = {}
 last_global_start = datetime.now()
@@ -25,12 +25,14 @@ user_last_run = {}
 
 execution_semaphore = asyncio.Semaphore(MAX_CONCURRENT_EXECUTIONS)
 
+
 async def check_subscription(user_id, context):
     try:
         member = await context.bot.get_chat_member(CHANNEL, user_id)
         return member.status in ['member', 'administrator', 'creator']
     except:
         return False
+
 
 def get_user_data(user_id):
     if user_id not in users_data:
@@ -42,23 +44,30 @@ def get_user_data(user_id):
         }
     return users_data[user_id]
 
+
 def check_file_size(file_bytes):
     return len(file_bytes) / 1024 <= MAX_CODE_SIZE_KB
+
 
 def run_code_sync(code, user_id):
     temp_file = f"/tmp/code_{user_id}.py"
     try:
         with open(temp_file, 'w') as f:
             f.write(code)
-        # Простой и надёжный запуск с таймаутом
+
+        # sys.executable – тот же Python, под которым работает бот
+        # -u – отключает буферизацию вывода
+        # stdin=DEVNULL – чтобы input() не вешал процесс
         result = subprocess.run(
-            ["python", temp_file],
+            [sys.executable, "-u", temp_file],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=CODE_TIMEOUT_SEC
         )
         output = result.stdout if result.stdout else result.stderr
         return output if output else "выполнено"
+
     except subprocess.TimeoutExpired:
         return f"код выполнялся дольше {CODE_TIMEOUT_SEC} секунд и был остановлен"
     except Exception as e:
@@ -66,6 +75,7 @@ def run_code_sync(code, user_id):
     finally:
         if os.path.exists(temp_file):
             os.remove(temp_file)
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global last_global_start, bot_start_time
@@ -96,8 +106,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("остановить код", callback_data="stop_code")],
         [InlineKeyboardButton("документация", callback_data="docs")]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("привет в uxt, выбери что нужно", reply_markup=reply_markup)
+    await update.message.reply_text(
+        "привет в uxt, выбери что нужно",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -132,7 +145,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text)
 
     elif query.data == "stop_code":
-        # Останавливать нечего, просто сообщаем
         await query.edit_message_text("код не запущен или уже завершился")
 
     elif query.data == "docs":
@@ -149,6 +161,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "бот работает 30 дней и отключится если 3 дня не будет входов"
         )
         await query.edit_message_text(text)
+
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
@@ -170,6 +183,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.setdefault(user_id, {})["waiting_for"] = "packages"
 
     await update.message.reply_text("нужны пакеты? напиши названия через пробел или точка если нет")
+
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -222,6 +236,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if output:
                 await update.message.reply_text(f"результат\n{output[:500]}")
 
+
 def main():
     app = Application.builder().token(TOKEN).build()
 
@@ -231,6 +246,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
