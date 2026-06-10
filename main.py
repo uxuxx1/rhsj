@@ -13,6 +13,8 @@ CHANNEL = "@workinuxuxx"
 
 users_data = {}
 user_processes = {}
+last_global_start = datetime.now()
+bot_start_time = datetime.now()
 
 async def check_subscription(user_id, context):
     try:
@@ -25,17 +27,9 @@ def get_user_data(user_id):
     if user_id not in users_data:
         users_data[user_id] = {
             "code": None,
-            "ai_requests_today": 0,
-            "last_ai_reset": datetime.now(),
+            "last_start": datetime.now(),
             "uploaded_at": None
         }
-    
-    today = datetime.now().date()
-    last_reset = users_data[user_id]["last_ai_reset"].date()
-    
-    if today != last_reset:
-        users_data[user_id]["ai_requests_today"] = 0
-        users_data[user_id]["last_ai_reset"] = datetime.now()
     
     return users_data[user_id]
 
@@ -44,6 +38,7 @@ def check_file_size(file_bytes):
     return size_kb <= 0.5
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global last_global_start, bot_start_time
     user_id = update.message.from_user.id
     
     is_subscribed = await check_subscription(user_id, context)
@@ -51,6 +46,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_subscribed:
         await update.message.reply_text(f"подпишись на канал {CHANNEL} чтобы использовать бота")
         return
+    
+    days_from_start = (datetime.now() - bot_start_time).days
+    if days_from_start >= 30:
+        await update.message.reply_text("бот проработал 30 дней, нужна перезагрузка на railway")
+        return
+    
+    days_passed = (datetime.now() - last_global_start).days
+    if days_passed >= 3:
+        await update.message.reply_text("бот отключен за неиспользованием 3 дня")
+        return
+    
+    last_global_start = datetime.now()
+    user_data = get_user_data(user_id)
+    user_data["last_start"] = datetime.now()
     
     keyboard = [
         [InlineKeyboardButton("запустить код", callback_data="run_code")],
@@ -75,12 +84,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "profile":
         user_data = get_user_data(user_id)
         code_status = "загружен" if user_data["code"] else "не загружен"
-        ai_left = 10 - user_data["ai_requests_today"]
-        text = f"твой профиль\nпользователь {user_id}\nкод {code_status}\nвопросов ии осталось {ai_left}\nдата входа {datetime.now().strftime('%d.%m.%Y')}"
+        text = f"профиль\nпользователь {user_id}\nкод {code_status}\nпоследний вход {user_data['last_start'].strftime('%d.%m.%Y %H:%M')}"
         await query.edit_message_text(text)
     
     elif query.data == "limits":
-        text = "лимиты uxt\nразмер кода максимум 0.50кб\nвопросов ии максимум 10 в день\nкода можно загружать один\nдругие функции без лимитов"
+        text = "лимиты uxt\nразмер кода максимум 0.50кб\nкода можно загружать один\nбот отключится если 3 дня не было входов\nвсе остальное без лимитов"
         await query.edit_message_text(text)
     
     elif query.data == "stop_code":
@@ -95,8 +103,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("код не запущен")
     
     elif query.data == "docs":
-        text = "документация uxt\nuxt это помощник для программистов на python\nзагружаешь свой код через запустить код максимум 0.50кб\nпотом нажимаешь запустить и бот выполнит твой скрипт\nесли будет ошибка можешь отправить в найти ошибки и бот поможет\nесли не установлены импорты идешь в установить pip и вводишь название пакета\nесли все равно ошибка можешь использовать ии помощник и описать проблему\nии даст решение но максимум 10 вопросов в день\nтвой профиль показывает статус кода и сколько вопросов ии осталось\nлимиты показывает все ограничения\nостановить код останавливает выполнение если оно зависло\nhostинг бесплатный но только 30 дней потом нужна подписка"
-
+        text = "документация uxt\nuxt помощник для программистов на python\nзагружаешь код через запустить код максимум 0.50кб\nвводишь названия пакетов через пробел или точка если не надо\nбот устанавливает пакеты и запускает код\nполучаешь результат выполнения\nпрофиль показывает когда последний вход\nлимиты показывает все ограничения\nостановить код останавливает выполнение если зависло\nбот работает 30 дней и отключится если 3 дня не будет входов"
         await query.edit_message_text(text)
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -153,8 +160,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result = subprocess.run(
                 ["python", temp_file],
                 capture_output=True,
-                text=True,
-                timeout=3
+                text=True
             )
             
             output = result.stdout if result.stdout else result.stderr
@@ -164,8 +170,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("выполнено")
             
             os.remove(temp_file)
-        except subprocess.TimeoutExpired:
-            await update.message.reply_text("таймаут")
         except Exception as e:
             await update.message.reply_text(f"ошибка {str(e)[:100]}")
         
