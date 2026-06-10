@@ -1,5 +1,6 @@
 import os
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
@@ -33,7 +34,23 @@ def get_user_data(user_id):
     
     return users_data[user_id]
 
-def check_file_size(file_bytes):
+def run_code_sync(code, user_id):
+    try:
+        temp_file = f"/tmp/code_{user_id}.py"
+        with open(temp_file, 'w') as f:
+            f.write(code)
+        
+        result = subprocess.run(
+            ["python", temp_file],
+            capture_output=True,
+            text=True
+        )
+        
+        output = result.stdout if result.stdout else result.stderr
+        os.remove(temp_file)
+        return output if output else "выполнено"
+    except Exception as e:
+        return f"ошибка {str(e)[:100]}"
     size_kb = len(file_bytes) / 1024
     return size_kb <= 0.5
 
@@ -151,27 +168,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
         
         await update.message.reply_text("запускаю код...")
+        await update.message.reply_text("код запущен")
         
-        try:
-            temp_file = f"/tmp/code_{user_id}.py"
-            with open(temp_file, 'w') as f:
-                f.write(user_data["code"])
-            
-            result = subprocess.run(
-                ["python", temp_file],
-                capture_output=True,
-                text=True
-            )
-            
-            output = result.stdout if result.stdout else result.stderr
-            if output:
-                await update.message.reply_text(f"результат\n{output[:500]}")
-            else:
-                await update.message.reply_text("выполнено")
-            
-            os.remove(temp_file)
-        except Exception as e:
-            await update.message.reply_text(f"ошибка {str(e)[:100]}")
+        loop = asyncio.get_event_loop()
+        output = await loop.run_in_executor(None, run_code_sync, user_data["code"], user_id)
+        
+        if output:
+            await update.message.reply_text(f"результат\n{output[:500]}")
         
         return
 
