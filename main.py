@@ -34,6 +34,10 @@ def get_user_data(user_id):
     
     return users_data[user_id]
 
+def check_file_size(file_bytes):
+    size_kb = len(file_bytes) / 1024
+    return size_kb <= 0.5
+
 def run_code_sync(code, user_id):
     try:
         temp_file = f"/tmp/code_{user_id}.py"
@@ -140,18 +144,28 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     user_data = get_user_data(user_id)
     user_data["code"] = file_bytes.decode('utf-8')
-    context.user_data["waiting_for"] = "packages"
+    
+    if user_id not in context.user_data:
+        context.user_data[user_id] = {}
+    context.user_data[user_id]["waiting_for"] = "packages"
     
     await update.message.reply_text("нужны пакеты? напиши названия через пробел или точка если нет")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+    
     user_id = update.message.from_user.id
     user_text = update.message.text.strip()
-    waiting_for = context.user_data.get("waiting_for")
+    
+    if user_id not in context.user_data:
+        context.user_data[user_id] = {}
+    
+    waiting_for = context.user_data[user_id].get("waiting_for")
     
     if waiting_for == "packages":
         user_data = get_user_data(user_id)
-        context.user_data["waiting_for"] = None
+        context.user_data[user_id]["waiting_for"] = None
         
         if user_text != ".":
             packages = user_text.split()
